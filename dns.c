@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <arpa/inet.h>
-#include <errno.h>
 
 typedef struct {
   uint16_t class;
@@ -14,6 +13,7 @@ typedef struct {
   uint8_t* value;
 } record_t;
 
+int fd;
 record_t* records;
 uint32_t nrecords;
 
@@ -27,6 +27,11 @@ uint32_t m;
 #define DNS_FORMERR  1
 #define DNS_NXDOMAIN 3
 #define DNS_NOTIMP   4
+
+void die() {
+  perror("dns");
+  exit(-1);
+}
 
 void buf_putnum(uint32_t n, uint8_t bytes) {
   while (bytes--) {
@@ -178,7 +183,7 @@ void dns_process() {
   }
 }
 
-int createsocket(uint16_t port) {
+void createsocket(uint16_t port) {
   struct sockaddr_in addr;
   int optval = 1;
 
@@ -186,23 +191,19 @@ int createsocket(uint16_t port) {
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
 
-  int s = socket(AF_INET, SOCK_DGRAM, 0);
-  if (s < 0) {
-    perror("dns");
-    return -3;
+  fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) {
+    die();
   }
 
-  setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
-  if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-    perror("dns");
-    return -2;
+  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    die();
   }
-
-  return s;
 }
 
-int readrecords(const char* fname) {
+void readrecords(const char* fname) {
   char name[512];
   char value[4096];
   uint32_t class, type;
@@ -210,7 +211,7 @@ int readrecords(const char* fname) {
 
   FILE* fp = fopen(fname, "rb");
   if (!fp) {
-    return -1;
+    die();
   }
 
   nrecords = 0;
@@ -235,25 +236,18 @@ int readrecords(const char* fname) {
   }
 
   fclose(fp);
-  return 0;
 }
 
 int main() {
   struct sockaddr addr;
   socklen_t addrlen = sizeof(addr);
 
-  int s = createsocket(5354);
-  if (s < 0) {
-    return -1;
-  }
+  createsocket(5354);
+  readrecords("records.txt");
 
-  if (readrecords("records.txt") < 0) {
-    return -2;
-  }
-
-  while ((n = recvfrom(s, msg, sizeof(msg), 0, &addr, &addrlen)) > 0) {
+  while ((n = recvfrom(fd, msg, sizeof(msg), 0, &addr, &addrlen)) > 0) {
     dns_process(msg, n);
-    sendto(s, reply, m, 0, &addr, addrlen);
+    sendto(fd, reply, m, 0, &addr, addrlen);
   }
 
   return 0;
