@@ -42,6 +42,7 @@ void buf_putbuf(const uint8_t* b, uint8_t n) {
 void dns_build_header(int response, int ancount) {
   memset(reply, 0, 12);
   memcpy(reply, msg, 2);
+  memcpy(reply+4, msg+4, 2);
 
   reply[2] = (msg[2] & 0x78) | 0x84; // 01111000 | 10000100
   reply[3] = (msg[3] & 0x00) | response; // 00000000 | 00000000
@@ -50,9 +51,8 @@ void dns_build_header(int response, int ancount) {
   reply[7] = ancount&0xFF;
 }
 
-void dns_add_response(const record_t* rr) {
-  uint16_t rdlength = strlen((const char*)rr->value);
-  uint8_t* p = rr->name;
+void buf_putname(const uint8_t* name) {
+  const uint8_t* p = name;
 
   while (*p) {
     uint32_t offset = 0;
@@ -62,8 +62,13 @@ void dns_add_response(const record_t* rr) {
     buf_putbuf(p, offset-1);
     p += offset;
   }
-
   buf_putnum(0, 1);
+}
+
+void dns_add_response(const record_t* rr) {
+  uint16_t rdlength = strlen((const char*)rr->value);
+
+  buf_putname(rr->name);
   buf_putnum(rr->type, 2);
   buf_putnum(rr->class, 2);
   buf_putnum(rr->ttl, 4);
@@ -79,32 +84,23 @@ int dns_resolve(const uint8_t* name, uint16_t type, uint16_t class) {
     if (records[i].class == class &&
         records[i].type == type &&
         !strcmp((char*)records[i].name, (char*)name)) {
-          printf("Query[%u][%u][%s]: [%s]\n", class, type, name, records[i].value);
           dns_add_response(&records[i]);
           ++answers;
     }
   }
 
-  if (answers == 0) {
-    printf("Query[%u][%u][%s]: NOT FOUND\n", class, type, name);
-  }
-
   return answers;
 }
 
-uint16_t dns_id(const uint8_t* msg, uint32_t n) {
-  return msg[0] << 8 | msg[1];
-}
-
-int dns_is_query(const uint8_t* msg, uint32_t n) {
+int dns_is_query() {
   return (msg[2] & 0x80) == 0;
 }
 
-uint16_t dns_query_count(const uint8_t* msg, uint32_t n) {
+uint16_t dns_query_count() {
   return msg[4] << 8 | msg[5];
 }
 
-int dns_read_name(const uint8_t* msg, uint32_t n, uint8_t* name, int* offset) {
+int dns_read_name(uint8_t* name, int* offset) {
   while (*offset < n) {
     uint8_t length = msg[(*offset)++];
 
@@ -115,7 +111,7 @@ int dns_read_name(const uint8_t* msg, uint32_t n, uint8_t* name, int* offset) {
 
     if ((length & 0xA0) == 0xA0) {
       int new_offset = length & 0x3F;
-      return dns_read_name(msg, n, name, &new_offset);
+      return dns_read_name(name, &new_offset);
     }
 
     if (length + *offset > n) {
@@ -138,15 +134,15 @@ int dns_extract_query(uint8_t* name, uint16_t* type, uint16_t* class) {
     return DNS_FORMERR;
   }
 
-  if (!dns_is_query(msg, n)) {
+  if (!dns_is_query()) {
     return DNS_FORMERR;
   }
 
-  if (dns_query_count(msg, n) != 1) {
+  if (dns_query_count() != 1) {
     return DNS_NOTIMP;
   }
 
-  if (dns_read_name(msg, n, name, &offset) != 0) {
+  if (dns_read_name(name, &offset) != 0) {
     return DNS_FORMERR;
   }
 
@@ -169,6 +165,10 @@ void dns_process() {
     return;
   }
 
+  buf_putname(name);
+  buf_putnum(type, 2);
+  buf_putnum(class, 2);
+
   int an = dns_resolve(name, type, class);
 
   if (an == 0) {
@@ -188,15 +188,14 @@ int createsocket(uint16_t port) {
 
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   if (s < 0) {
-    fprintf(stderr, "error socket(): %d", s);
+    perror("dns");
     return -3;
   }
 
-  setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(optval));
+  setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
-  int b = bind(s, (struct sockaddr*)&addr, sizeof(addr));
-  if (b < 0) {
-    fprintf(stderr, "error bind(): %d", errno);
+  if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    perror("dns");
     return -2;
   }
 
@@ -204,26 +203,45 @@ int createsocket(uint16_t port) {
 }
 
 int readrecords(const char* fname) {
-  nrecords = 1;
-  records = malloc(sizeof(record_t)*nrecords);
+  char name[512];
+  char value[4096];
+  uint32_t class, type;
+  uint32_t ttl;
 
-  records[0].class = 1;
-  records[0].type = 1;
-  records[0].name = (uint8_t*)strdup("hugopeixoto.net.");
+  FILE* fp = fopen(fname, "rb");
+  if (!fp) {
+    return -1;
+  }
 
-  records[0].ttl = 3519;
-  records[0].value = (uint8_t*)strdup("\xC3\xC8\xFD\x88");
+  nrecords = 0;
+  records = NULL;
+  while (fscanf(fp, "%s %u %u %u %[^\n]\n", name, &class, &type, &ttl, value) == 5) {
+    records = realloc(records, (1+nrecords)*sizeof(record_t));
 
+    records[nrecords].class = class;
+    records[nrecords].type = type;
+    records[nrecords].name = (uint8_t*)strdup(name);
+    records[nrecords].ttl = ttl;
+
+    if (class == 1 && type == 1) {
+      struct in_addr inp;
+      inet_aton(value, &inp);
+      memcpy(value, &inp.s_addr, 4);
+      value[4] = 0;
+    }
+
+    records[nrecords].value = (uint8_t*)strdup(value);
+    nrecords++;
+  }
+
+  fclose(fp);
   return 0;
 }
 
-void dns_log() {
-  FILE* fp = fopen("log.txt", "a+");
-  fwrite(reply, m, 1, fp);
-  fclose(fp);
-}
-
 int main() {
+  struct sockaddr addr;
+  socklen_t addrlen = sizeof(addr);
+
   int s = createsocket(5354);
   if (s < 0) {
     return -1;
@@ -233,13 +251,9 @@ int main() {
     return -2;
   }
 
-  struct sockaddr src_addr;
-  socklen_t src_addrlen;
-
-  while ((n = recvfrom(s, msg, sizeof(msg), 0, &src_addr, &src_addrlen)) > 0) {
+  while ((n = recvfrom(s, msg, sizeof(msg), 0, &addr, &addrlen)) > 0) {
     dns_process(msg, n);
-    dns_log();
-    sendto(s, reply, m, 0, &src_addr, src_addrlen);
+    sendto(s, reply, m, 0, &addr, addrlen);
   }
 
   return 0;
