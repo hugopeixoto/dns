@@ -184,14 +184,14 @@ void dns_process() {
 }
 
 void createsocket(uint16_t port) {
-  struct sockaddr_in addr;
+  struct sockaddr_in6 addr;
   int optval = 1;
 
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(port);
+  addr.sin6_family = AF_INET6;
+  addr.sin6_addr = in6addr_any;
+  addr.sin6_port = htons(port);
 
-  fd = socket(AF_INET, SOCK_DGRAM, 0);
+  fd = socket(AF_INET6, SOCK_DGRAM, 0);
   if (fd < 0) {
     die();
   }
@@ -239,15 +239,15 @@ void readrecords(const char* fname) {
 }
 
 int main() {
-  struct sockaddr addr;
+  struct sockaddr_in6 addr;
   socklen_t addrlen = sizeof(addr);
 
   createsocket(5354);
   readrecords("records.txt");
 
-  while ((n = recvfrom(fd, msg, sizeof(msg), 0, &addr, &addrlen)) > 0) {
+  while ((n = recvfrom(fd, msg, sizeof(msg), 0, (struct sockaddr*)&addr, &addrlen)) > 0) {
     dns_process(msg, n);
-    sendto(fd, reply, m, 0, &addr, addrlen);
+    sendto(fd, reply, m, 0, (struct sockaddr*)&addr, addrlen);
   }
 
   return 0;
