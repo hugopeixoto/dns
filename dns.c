@@ -13,9 +13,9 @@ typedef struct {
   uint8_t* value;
 } record_t;
 
-int fd;
-record_t* records;
-uint32_t nrecords;
+int fd = 0;
+record_t* records = NULL;
+uint32_t nrecords = 0;
 
 uint8_t msg[8192];
 uint32_t n;
@@ -214,6 +214,7 @@ void readrecords(const char* fname) {
     die();
   }
 
+  free(records);
   nrecords = 0;
   records = NULL;
   while (fscanf(fp, "%s %u %u %u %[^\n]\n", name, &class, &type, &ttl, value) == 5) {
